@@ -42,10 +42,12 @@ project simply generates provenance as a separate step in an existing workflow.
 - [Provenance for matrix strategy builds](#provenance-for-matrix-strategy-builds)
   - [A single provenance attestation for all artifacts](#a-single-provenance-attestation-for-all-artifacts)
   - [A different attestation for each iteration](#a-different-attestation-for-each-iteration)
+- [Provenance for artifacts built across multiple operating systems](#provenance-for-artifacts-built-across-multiple-operating-systems)
 - [Known Issues](#known-issues)
   - [Skip output 'hashes' since it may contain secret](#skip-output-hashes-since-it-may-contain-secret)
   - ['internal error' when using `upload-assets`](#internal-error-when-using-upload-assets)
   - [error updating to TUF remote mirror: tuf: invalid key](#error-updating-to-tuf-remote-mirror-tuf-invalid-key)
+  - [Compatibility with `actions/download-artifact`](#compatibility-with-actionsdownload-artifact)
 
 <!-- tocstop -->
 
@@ -191,12 +193,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Download artifact1
-        uses: actions/download-artifact@fb598a63ae348fa914e94cd0ff38f362e927b741 # tag=v2.1.0
+        uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427 # v4.1.4
         with:
           name: artifact1
 
       - name: Download artifact2
-        uses: actions/download-artifact@fb598a63ae348fa914e94cd0ff38f362e927b741 # tag=v2.1.0
+        uses: actions/download-artifact@c850b930e6ba138125429b7e5c93fc707a7f8427 # v4.1.4
         with:
           name: artifact2
 
@@ -264,7 +266,6 @@ The [generic workflow](https://github.com/slsa-framework/slsa-github-generator/b
 | `upload-assets`           | no                                                                 | false                                                                                           | If true provenance is uploaded to a GitHub release for new tags.                                                                                                                                                                                                                   |
 | `upload-tag-name`         | no                                                                 |                                                                                                 | If specified and `upload-assets` is set to true, the provenance will be uploaded to a Github release identified by the tag-name regardless of the triggering event.                                                                                                                |
 | `provenance-name`         | no                                                                 | "(subject name).intoto.jsonl" if a single subject. "multiple.intoto.json" if multiple subjects. | The artifact name of the signed provenance. The file must have the `intoto.jsonl` extension.                                                                                                                                                                                       |
-| `attestation-name`        | no                                                                 | "(subject name).intoto.jsonl" if a single subject. "multiple.intoto.json" if multiple subjects. | The artifact name of the signed provenance. The file must have the `intoto.jsonl` extension. DEPRECATED: use `provenance-name` instead.                                                                                                                                            |
 | `private-repository`      | no                                                                 | false                                                                                           | Set to true to opt-in to posting to the public transparency log. Will generate an error if false for private repositories. This input has no effect for public repositories. See [Private Repositories](#private-repositories).                                                    |
 | `continue-on-error`       | no                                                                 | false                                                                                           | Set to true to ignore errors. This option is useful if you won't want a failure to fail your entire workflow.                                                                                                                                                                      |
 | `draft-release`           | no                                                                 | false                                                                                           | If true, the release is created as a draft                                                                                                                                                                                                                                         |
@@ -276,7 +277,6 @@ The [generic workflow](https://github.com/slsa-framework/slsa-github-generator/b
 | Name               | Description                                                                                     |
 | ------------------ | ----------------------------------------------------------------------------------------------- |
 | `provenance-name`  | The artifact name of the signed provenance.                                                     |
-| `attestation-name` | The artifact name of the signed provenance. DEPRECATED: use `provenance-name` instead.          |
 | `outcome`          | If `continue-on-error` is `true`, will contain the outcome of the run (`success` or `failure`). |
 
 ### Provenance Format
@@ -1407,6 +1407,175 @@ jobs:
       upload-assets: true # Optional: Upload to a new release
 ```
 
+## Provenance for artifacts built across multiple operating systems
+
+If a single release job produces artifacts for multiple operating systems (using
+matrix strategy), there are a few more caveats to consider:
+
+1. First, it is ideal to make Windows behave the same as Linux and MacOS by
+   making the runner use `bash` as the shell to execute commands in:
+
+   ```yaml
+   defaults:
+     run:
+       shell: bash
+   ```
+
+2. Optionally, you might also want to make the workflow use LF as line
+   terminator even on Windows:
+
+   ```yaml
+       - run: git config --global core.autocrlf input
+       # Alternatively, also force line endings for every file
+       # - run: |
+       #     git config --global core.eol lf
+       #     git config --global core.autocrlf input
+   ```
+
+The other complexity arises from the fact that the utilities used to compute the
+digest (`sha256sum`) and the base 64 encoding (`base64`) have different
+behaviors across the operating systems:
+
+- On MacOS, the utlity to compute the digest is called `shasum` and the
+  algorithm is passed via the `-a 256` algorithm
+- On Windows, we need to tell `sha256sum` to treat all files as text by using
+  the `-t` switch, otherwise the output will contain an extra `*` in front of
+  the filename. This will later be wrongly interpretted as a glob pattern, so we
+  should avoid it.
+- On MacOS, `base64` does not have a `-w0` option, the line wrapping is
+  implicit.
+
+One way to merge all these differences is to use the bash `||` operator:
+
+```yaml
+      - id: hash
+        run: |
+          set -euo pipefail
+          (sha256sum -t release_artifact_${{ runner.os }} || shasum -a 256 release_artifact_${{ runner.os }}) > checksum
+          echo "hash-${{ matrix.os }}=$(base64 -w0 checksum || base64 checksum)" >> "${GITHUB_OUTPUT}"
+```
+
+Thus, to generate a single provenance for artifacts built on all 3 operating
+systems, you would use the following example:
+
+```yaml
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # Don't cancel other jobs if one fails
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    outputs:
+      hash-ubuntu-latest: ${{ steps.hash.outputs.hash-ubuntu-latest }}
+      hash-macos-latest: ${{ steps.hash.outputs.hash-macos-latest }}
+      hash-windows-latest: ${{ steps.hash.outputs.hash-windows-latest }}
+    steps:
+      - run: git config --global core.autocrlf input
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        with:
+          persist-credentials: false
+
+      # Do the build to create release_artifact_${{ runner.os }}
+      - run: ...
+
+      - uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
+        with:
+          path: release_artifact_${{ runner.os }}
+          name: release_artifact_${{ runner.os }}
+          if-no-files-found: error
+      - id: hash
+        run: |
+          set -euo pipefail
+          (sha256sum -t release_artifact_${{ runner.os }} || shasum -a 256 release_artifact_${{ runner.os }}) > checksum
+          echo "hash-${{ matrix.os }}=$(base64 -w0 checksum || base64 checksum)" >> "${GITHUB_OUTPUT}"
+
+  provenance:
+    needs: [build]
+    strategy:
+      fail-fast: false # Don't cancel other jobs if one fails
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.9.0
+    with:
+      base64-subjects: "${{ needs.build.outputs[format('hash-{0}', matrix.os)] }}"
+      upload-assets: true # NOTE: This does nothing unless 'upload-tag-name' parameter is also set to an existing tag
+```
+
+Alternatively, to generate 3 different provenance statements, one per each
+artifact, you would use the following example:
+
+```yaml
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # Don't cancel other jobs if one fails
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    outputs:
+      hash-ubuntu-latest: ${{ steps.hash.outputs.hash-ubuntu-latest }}
+      hash-macos-latest: ${{ steps.hash.outputs.hash-macos-latest }}
+      hash-windows-latest: ${{ steps.hash.outputs.hash-windows-latest }}
+    steps:
+      - run: git config --global core.autocrlf input
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        with:
+          persist-credentials: false
+
+      # Do the build to create release_artifact_${{ runner.os }}
+      - run: ...
+
+      - uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
+        with:
+          path: release_artifact_${{ runner.os }}
+          name: release_artifact_${{ runner.os }}
+          if-no-files-found: error
+      - id: hash
+        run: |
+          set -euo pipefail
+          (sha256sum -t release_artifact_${{ runner.os }} || shasum -a 256 release_artifact_${{ runner.os }}) > checksum
+          echo "hash-${{ matrix.os }}=$(base64 -w0 checksum || base64 checksum)" >> "${GITHUB_OUTPUT}"
+
+  combine_hashes:
+    needs: [build]
+    runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.combine_hashes.outputs.hashes }}
+    env:
+      HASHES: ${{ toJSON(needs.build.outputs) }}
+    steps:
+      - id: combine_hashes
+        run: |
+          set -euo pipefail
+          echo "${HASHES}" | jq -r '.[] | @base64d' | sed "/^$/d" > hashes
+          echo "hashes=$(base64 -w0 hashes)" >> "${GITHUB_OUTPUT}"
+
+  provenance:
+    needs: [combine_hashes]
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.9.0
+    with:
+      base64-subjects: "${{ needs.combine_hashes.outputs.hashes }}"
+      upload-assets: true # NOTE: This does nothing unless 'upload-tag-name' parameter is also set to an existing tag
+
+```
+
 ## Known Issues
 
 ### Skip output 'hashes' since it may contain secret
@@ -1467,3 +1636,15 @@ using a release tag in order to allow verification by `slsa-verifier`.
 ```yaml
 uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v1.9.0
 ```
+
+### Compatibility with `actions/download-artifact`
+
+`slsa-github-generator@v1.9.0` and prior use [`actions/upload-artifact@v3`](https://github.com/actions/upload-artifact) and [`actions/download-artifact@v3`](https://github.com/actions/download-artifact) which are not backwards compatible the `@v4`s used in current versions of `slsa-github-generator`.
+The interface remains the same, however. If your own workflows want to download artifacts produced by our workflows, they must begin using `actions/download-artifact@v4`. For your other dependent workflows, you may find that you need to upgrade all of your uses of both of the actions to `@v4` to maintain compatibility.
+
+See more migration guidance
+
+- https://github.com/actions/upload-artifact/blob/main/docs/MIGRATION.md
+- https://github.com/actions/download-artifact/blob/main/docs/MIGRATION.md
+
+This is part of our effort to upgrade from the now-deprecated node16 that the `@v3`s used. `@v4s` use node20.

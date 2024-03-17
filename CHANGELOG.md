@@ -10,8 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- toc -->
 
 - [Unreleased](#unreleased)
-  - [Changes](#changes)
-    - [Container generator](#container-generator)
+  - [Unreleased: Breaking Change: upload-artifact and download-artifact](#unreleased-breaking-change-upload-artifact-and-download-artifact)
+  - [Unreleased: Breaking Change: attestation-name Workflow Input and Output](#unreleased-breaking-change-attestation-name-workflow-input-and-output)
+  - [Unreleased: Gradle Builder](#unreleased-gradle-builder)
+  - [Unreleased: Go Builder](#unreleased-go-builder)
+  - [Unreleased: Container Generator](#unreleased-container-generator)
 - [v1.9.0](#v190)
   - [v1.9.0: BYOB framework (beta)](#v190-byob-framework-beta)
   - [v1.9.0: Maven builder (beta)](#v190-maven-builder-beta)
@@ -28,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       - [New Features](#new-features)
     - [Generic generator](#generic-generator)
       - [New Features](#new-features-1)
-    - [Container generator](#container-generator-1)
+    - [Container generator](#container-generator)
   - [Changelog since v1.5.0](#changelog-since-v150)
 - [v1.5.0](#v150)
   - [Summary of changes](#summary-of-changes-1)
@@ -36,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       - [New Features](#new-features-2)
     - [Generic generator](#generic-generator-1)
       - [New Features](#new-features-3)
-    - [Container generator](#container-generator-2)
+    - [Container generator](#container-generator-1)
       - [New Features](#new-features-4)
   - [Changelog since v1.4.0](#changelog-since-v140)
 - [v1.4.0](#v140)
@@ -95,15 +98,31 @@ Information on the next release will be added here.
 Use the format "X.Y.Z: Go builder" etc. for format headers to avoid header name
 duplication."
 -->
+
 ## Unreleased
 
-This section includes upcoming changes which are not included in the latest release.
+### Unreleased: Breaking Change: upload-artifact and download-artifact
 
-### Changes
+- Our workflows now use the new `@v4`s of `actions/upload-artifact` and `actions/download-artifact`, which are incompatiblle with the prior `@v3`. See Our docs on the [generic generator](./internal/builders/generic/README.md#compatibility-with-actionsdownload-artifact) for more information and how to upgrade.
 
-#### Container generator
+### Unreleased: Breaking Change: attestation-name Workflow Input and Output
 
-- **Added**: Passing an image name to the `generator_container_salsa3.yml` containing secret values. (See [#2917](https://github.com/slsa-framework/slsa-github-generator/issues/2917))
+- `attestation-name` as a workflow input to `.github/workflows/generator_generic_slsa3.yml` is now removed. Use `provenance-name` instead.
+
+### Unreleased: Gradle Builder
+
+- The Gradle Builder was fixed when the project root is the same as the
+  repository root (#2727)
+
+### Unreleased: Go Builder
+
+- The `go-version-file` input was fixed so that it can find the `go.mod` file
+  (#2661)
+
+### Unreleased: Container Generator
+
+- A new `provenance-repository` input was added to allow reading provenance from
+  a different container repository than the image itself (#2956)
 
 ## v1.9.0
 
